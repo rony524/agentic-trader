@@ -1,0 +1,142 @@
+version: "0.1.0"
+nodes:
+  - id: dram_price
+    label: "DRAM/HBM prices"
+  - id: nand_price
+    label: "NAND prices"
+  - id: ai_accel_demand
+    label: "AI accelerator demand"
+  - id: hyperscaler_capex
+    label: "Hyperscaler capex"
+  - id: hyperscaler_margins
+    label: "Hyperscaler margins"
+  - id: foundry_capacity
+    label: "Foundry capacity"
+  - id: litho_equipment_demand
+    label: "Lithography equipment demand"
+  - id: export_controls
+    label: "Export controls"
+  - id: dc_power_demand
+    label: "Data-center power demand"
+  - id: power_prices
+    label: "Power prices"
+  - id: natgas_price
+    label: "Natgas price"
+  - id: uranium_price
+    label: "Uranium price"
+  - id: grid_equipment_demand
+    label: "Grid equipment demand"
+  - id: copper_price
+    label: "Copper price"
+  - id: supply_chain_stress
+    label: "Supply chain stress"
+  - id: MU
+    label: "Micron"
+    type: ticker
+  - id: NVDA
+    label: "NVIDIA"
+    type: ticker
+  - id: AMD
+    label: "AMD"
+    type: ticker
+  - id: AVGO
+    label: "Broadcom"
+    type: ticker
+  - id: TSM
+    label: "TSMC"
+    type: ticker
+  - id: SMH
+    label: "VanEck Semis ETF"
+    type: ticker
+  - id: ASML
+    label: "ASML"
+    type: ticker
+  - id: AMAT
+    label: "Applied Materials"
+    type: ticker
+  - id: LRCX
+    label: "Lam Research"
+    type: ticker
+  - id: KLAC
+    label: "KLA"
+    type: ticker
+  - id: AMZN
+    label: "Amazon"
+    type: ticker
+  - id: MSFT
+    label: "Microsoft"
+    type: ticker
+  - id: GOOGL
+    label: "Alphabet"
+    type: ticker
+  - id: META
+    label: "Meta"
+    type: ticker
+  - id: VST
+    label: "Vistra"
+    type: ticker
+  - id: CEG
+    label: "Constellation Energy"
+    type: ticker
+  - id: NRG
+    label: "NRG Energy"
+    type: ticker
+  - id: GEV
+    label: "GE Vernova"
+    type: ticker
+  - id: ETN
+    label: "Eaton"
+    type: ticker
+  - id: VRT
+    label: "Vertiv"
+    type: ticker
+  - id: XLU
+    label: "Utilities ETF"
+    type: ticker
+  - id: XLE
+    label: "Energy ETF"
+    type: ticker
+  - id: CCJ
+    label: "Cameco"
+    type: ticker
+  - id: URA
+    label: "Uranium ETF"
+    type: ticker
+  - id: FCX
+    label: "Freeport-McMoRan"
+    type: ticker
+  - id: XLB
+    label: "Materials ETF"
+    type: ticker
+
+edges:
+  - {from: hyperscaler_capex, to: ai_accel_demand, weight: 0.8}
+  - {from: hyperscaler_capex, to: dc_power_demand, weight: 0.6, lag_days: 60}
+  - {from: hyperscaler_capex, to: litho_equipment_demand, weight: 0.4, lag_days: 30}
+  - {from: ai_accel_demand, to: dram_price, weight: 0.6}
+  - {from: dram_price, to: MU, weight: 0.9}
+  - {from: dram_price, to: hyperscaler_margins, weight: -0.4}
+  - {from: hyperscaler_margins, to: AMZN, weight: 0.5}
+  - {from: hyperscaler_margins, to: MSFT, weight: 0.4}
+  - {from: ai_accel_demand, to: NVDA, weight: 0.9}
+  - {from: ai_accel_demand, to: TSM, weight: 0.6}
+  - {from: foundry_capacity, to: ai_accel_demand, weight: 0.3}
+  - {from: litho_equipment_demand, to: ASML, weight: 0.8}
+  - {from: litho_equipment_demand, to: AMAT, weight: 0.7}
+  - {from: export_controls, to: ASML, weight: -0.5}
+  - {from: export_controls, to: AMAT, weight: -0.5}
+  - {from: export_controls, to: NVDA, weight: -0.3}
+  - {from: dc_power_demand, to: power_prices, weight: 0.5}
+  - {from: dc_power_demand, to: grid_equipment_demand, weight: 0.7}
+  - {from: power_prices, to: VST, weight: 0.7}
+  - {from: power_prices, to: CEG, weight: 0.6}
+  - {from: dc_power_demand, to: uranium_price, weight: 0.3, lag_days: 90}
+  - {from: uranium_price, to: CCJ, weight: 0.8}
+  - {from: grid_equipment_demand, to: GEV, weight: 0.7}
+  - {from: grid_equipment_demand, to: ETN, weight: 0.6}
+  - {from: grid_equipment_demand, to: VRT, weight: 0.7}
+  - {from: grid_equipment_demand, to: copper_price, weight: 0.3}
+  - {from: copper_price, to: FCX, weight: 0.8}
+  - {from: natgas_price, to: power_prices, weight: 0.5}
+  - {from: natgas_price, to: XLE, weight: 0.5}
+  - {from: supply_chain_stress, to: foundry_capacity, weight: -0.4}

@@ -1,0 +1,24 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: services/trader/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./trader.db
+      - ALPACA_PAPER=true
+      - WEB_ORIGIN=http://localhost:3000
+      - ADMIN_TOKEN=dev-admin-token
+    volumes:
+      - ./config:/app/config
+      - ./trader.db:/app/trader.db
+  web:
+    build:
+      context: ./apps/web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - api

@@ -1,0 +1,18 @@
+version: "0.1.0"
+limits:
+  leverage: false
+  max_gross_exposure: 1.0
+  shorting: false
+  max_single_position: 0.15
+  max_etf_position: 0.25
+  max_sleeve_weight: 0.40
+  min_positions_when_invested: 4
+  max_single_day_turnover: 0.50
+  max_orders_per_day: 30
+  order_size_floor_usd: 50
+  allowed_order_types: ["market", "limit"]
+kill_switches:
+  max_drawdown_pct: 0.15
+  max_daily_loss_pct: 0.05
+  max_stale_sources: 2
+  max_tracking_error_pct: 0.05

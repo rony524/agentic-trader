@@ -1,0 +1,21 @@
+version: "0.1.0"
+rebalance: weekly
+top_n: 8
+hold_buffer: 3
+min_score: 0.0
+weights:
+  momentum: 0.50
+  news: 0.10
+  shock: 0.15
+  fundamentals: 0.25
+lookbacks:
+  mom_long_days: 252
+  mom_skip_days: 21
+  mom_short_days: 63
+  vol_days: 60
+shock_half_life_days: 10
+base_exposure: 1.0
+regime:
+  trend_ma_days: 200
+  vol_threshold: 1.5
+  multipliers: [1.0, 0.6, 0.3]

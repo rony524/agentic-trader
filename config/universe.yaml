@@ -1,0 +1,19 @@
+version: "0.1.0"
+universe:
+  - sleeve: "Memory & compute"
+    tickers: [MU, NVDA, AMD, AVGO, TSM, SMH]
+  - sleeve: "Semi equipment"
+    tickers: [ASML, AMAT, LRCX, KLAC]
+  - sleeve: "Hyperscalers"
+    tickers: [AMZN, MSFT, GOOGL, META]
+  - sleeve: "Power & grid"
+    tickers: [VST, CEG, NRG, GEV, ETN, VRT, XLU]
+  - sleeve: "Energy inputs"
+    tickers: [XLE, CCJ, URA]
+  - sleeve: "Materials / logistics"
+    tickers: [FCX, XLB]
+  - sleeve: "Cash proxy"
+    tickers: [SGOV]
+liquidity:
+  min_adv_usd: 50000000
+  min_price: 5

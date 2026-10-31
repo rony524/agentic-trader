@@ -1,0 +1,8 @@
+version: "0.1.0"
+threshold:
+  default: 1
+  rebalance: 1
+  param_change: 1
+  risk_reduction: 1
+  risk_config_change: 1
+approvers: []
