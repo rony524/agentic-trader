@@ -7,3 +7,9 @@ node_modules/
 dist/
 venv/
 .venv/
+*.egg-info/
+get-pip.py
+trader.db
+services/trader/trader.db
+services/trader/.pytest_cache/
+apps/web/next-env.d.ts
