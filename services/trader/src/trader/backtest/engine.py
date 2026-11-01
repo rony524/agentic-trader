@@ -1,6 +1,13 @@
-"""Backtest engine: weekly rebalance, inverse-vol weights, regime scaling."""
+"""Backtest engine: weekly rebalance, inverse-vol weights, caps, regime scaling.
+
+Point-in-time: weights chosen at a rebalance date use only closes up to and including that date,
+and are first applied to the *next* day's returns.
+
+News/shock signals only exist from the day we started collecting them, so they have no history and
+are 0 in the backtest. Only price-based parameters (top_n, hold_buffer, lookbacks, regime) can be tested.
+"""
 from __future__ import annotations
-import hashlib, json, uuid, datetime as dt
+import hashlib, json, uuid
 from typing import Any
 import numpy as np
 import pandas as pd
@@ -8,6 +15,10 @@ import pandas as pd
 from trader.settings import get_universe, get_strategy, get_risk
 
 SLIPPAGE_BPS = 5  # per side for large caps/ETFs
+CASH_YIELD = 0.04  # annual, earned on the unallocated remainder
+ETFS = {"SMH", "XLU", "XLE", "XLB", "URA", "SGOV"}
+CASH_TICKER = "SGOV"
+TEST_FRACTION = 0.3  # last 30% of the period is reported separately as the test window
 
 def all_tickers() -> list[str]:
     uni = get_universe()
@@ -24,141 +35,147 @@ def sleeve_map() -> dict[str, str]:
             m[t] = sleeve["sleeve"]
     return m
 
-def compute_signals(closes: pd.DataFrame, strategy: dict | None = None) -> pd.DataFrame:
-    """Compute S1 momentum + S5 regime from daily closes. Index=ticker, columns=signal values."""
+def momentum_score(closes: pd.DataFrame, lb: dict) -> pd.DataFrame:
+    """S1 for every date: 0.6 * rank(12-1 momentum) + 0.4 * rank(3m momentum), scaled to [-1, 1]."""
+    mom_long = closes.shift(lb["mom_skip_days"]) / closes.shift(lb["mom_long_days"]) - 1
+    mom_short = closes / closes.shift(lb["mom_short_days"]) - 1
+    raw = 0.6 * mom_long.rank(axis=1, pct=True) + 0.4 * mom_short.rank(axis=1, pct=True)
+    return raw * 2 - 1
+
+def regime_multiplier(closes: pd.DataFrame, strat: dict) -> pd.Series:
+    """Per date: multipliers[0] if SPY > its MA and SMH vol is calm, [1] if one fails, [2] if both fail."""
+    reg = strat["regime"]
+    mults = reg["multipliers"]
+    fails = pd.Series(0, index=closes.index)
+    if "SPY" in closes:
+        spy = closes["SPY"]
+        fails += (spy <= spy.rolling(reg["trend_ma_days"]).mean()).astype(int)
+    if "SMH" in closes:
+        vol20 = closes["SMH"].pct_change().rolling(20).std()
+        fails += (vol20 / vol20.rolling(252, min_periods=60).median() >= reg["vol_threshold"]).astype(int)
+    return fails.clip(0, 2).map(lambda f: mults[f])
+
+def select_weights(scores: pd.Series, vol: pd.Series, held: set[str], strat: dict, risk: dict,
+                   multiplier: float, smap: dict[str, str]) -> dict[str, float]:
+    """Top-N by score (with hold buffer) → inverse-vol → regime scaling → position and sleeve caps.
+    Whatever is left over stays in cash."""
+    scores = scores.drop(CASH_TICKER, errors="ignore").dropna()
+    scores = scores[vol.reindex(scores.index).notna()]
+    ranked = scores.sort_values(ascending=False)
+    top_n, buffer = strat["top_n"], strat["hold_buffer"]
+    selected = [t for t in ranked.index[:top_n] if ranked[t] > strat["min_score"]]
+    keep_zone = set(ranked.index[:top_n + buffer])
+    selected += [t for t in held if t in keep_zone and t not in selected and ranked.get(t, -np.inf) > strat["min_score"]]
+    if len(selected) < risk["limits"]["min_positions_when_invested"]:
+        return {}
+
+    inv_vol = 1.0 / vol[selected].clip(lower=1e-4)
+    gross = strat["base_exposure"] * multiplier
+    w = inv_vol / inv_vol.sum() * gross
+    tilts = strat.get("sleeve_tilts") or {}
+    if tilts:
+        w = w * pd.Series({t: float(tilts.get(smap.get(t, ""), 1.0)) for t in w.index})
+        if w.sum() > gross:  # an overweight tilt reshuffles weight between sleeves, never adds leverage
+            w *= gross / w.sum()
+    limits = risk["limits"]
+    w = w.clip(upper=pd.Series({t: limits["max_etf_position"] if t in ETFS else limits["max_single_position"] for t in w.index}))
+    sleeve_tot = w.groupby(lambda t: smap.get(t, "")).transform("sum")
+    over = sleeve_tot > limits["max_sleeve_weight"]
+    w[over] *= limits["max_sleeve_weight"] / sleeve_tot[over]
+    return {t: float(v) for t, v in w.items() if v > 1e-6}
+
+def target_weights_as_of(closes: pd.DataFrame, strategy: dict | None = None,
+                         extra_scores: pd.Series | None = None, held: set[str] | None = None) -> dict[str, float]:
+    """Live target weights at the last date in `closes`. `extra_scores` (news/shock part of the composite) is added on top."""
     strat = strategy or get_strategy()
-    lb = strat["lookbacks"]
-    long_lb = lb["mom_long_days"]
-    skip = lb["mom_skip_days"]
-    short_lb = lb["mom_short_days"]
-    vol_days = lb["vol_days"]
+    tradable = [t for t in all_tickers() if t in closes.columns]
+    scores = momentum_score(closes[tradable], strat["lookbacks"]).iloc[-1] * strat["weights"]["momentum"]
+    if extra_scores is not None:
+        scores = scores.add(extra_scores.reindex(scores.index).fillna(0), fill_value=0)
+    vol = closes[tradable].pct_change().rolling(strat["lookbacks"]["vol_days"]).std().iloc[-1]
+    mult = float(regime_multiplier(closes, strat).iloc[-1])
+    return select_weights(scores, vol, held or set(), strat, get_risk(), mult, sleeve_map())
 
-    returns = closes.pct_change()
-    mom_long = (closes.shift(skip) / closes.shift(long_lb)) - 1
-    mom_short = (closes / closes.shift(short_lb)) - 1
-    vol = returns.rolling(vol_days).std() * np.sqrt(252)
+def _metrics(equity: pd.Series, turnover: list[float]) -> dict[str, float]:
+    rets = equity.pct_change().dropna()
+    if len(rets) < 2:
+        return {"cagr": 0.0, "volatility": 0.0, "sharpe": 0.0, "max_drawdown": 0.0, "avg_turnover": 0.0}
+    growth = equity.iloc[-1] / equity.iloc[0]
+    years = len(rets) / 252
+    vol = rets.std() * np.sqrt(252)
+    return {
+        "cagr": round(float(growth ** (1 / years) - 1), 4),
+        "volatility": round(float(vol), 4),
+        "sharpe": round(float(rets.mean() / rets.std() * np.sqrt(252)) if rets.std() > 0 else 0.0, 4),
+        "max_drawdown": round(float((equity / equity.cummax() - 1).min()), 4),
+        "avg_turnover": round(float(np.mean(turnover)) if turnover else 0.0, 4),
+    }
 
-    df = pd.DataFrame({
-        "mom_12_1": mom_long.iloc[-1],
-        "mom_3m": mom_short.iloc[-1],
-        "vol": vol.iloc[-1],
-    })
-    # rank momentum cross-sectionally
-    df["s1"] = df["mom_12_1"].rank(pct=True) * 2 - 1  # -1..1
-
-    # Regime: SPY above 200DMA and vol < threshold
-    regime_cfg = strat["regime"]
-    spy_vol = df.loc["SPY", "vol"] if "SPY" in df.index else 1.0
-    vol_regime = 1.0 if spy_vol < regime_cfg["vol_threshold"] else 0.0
-    return df, vol_regime
-
-def run_backtest(closes: pd.DataFrame, strategy: dict | None = None, start: str = "2020-01-01", end: str | None = None) -> dict[str, Any]:
-    """Weekly rebalance, inverse-vol weights, regime scaling. Returns metrics + equity curve."""
+def run_backtest(closes: pd.DataFrame, strategy: dict | None = None, start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    """Weekly rebalance on the last trading day of each week, executed from the next day's returns."""
     strat = strategy or get_strategy()
     risk = get_risk()
     smap = sleeve_map()
-    top_n = strat["top_n"]
-    hold_buffer = strat["hold_buffer"]
-    min_score = strat["min_score"]
-    base_exposure = strat["base_exposure"]
-    multipliers = strat["regime"]["multipliers"]
-    vol_threshold = strat["regime"]["vol_threshold"]
+    lb = strat["lookbacks"]
 
-    if end is None:
-        end = str(closes.index.max().date())
+    closes = closes.sort_index()
+    tradable = [t for t in all_tickers() if t in closes.columns and t != CASH_TICKER]
+    # indicators use the whole history (each row only looks backwards); the test window is trimmed afterwards
+    scores = momentum_score(closes[tradable], lb) * strat["weights"]["momentum"]
+    rets = closes[tradable].pct_change()
+    vol = rets.rolling(lb["vol_days"]).std()
+    mult = regime_multiplier(closes, strat)
 
-    closes = closes.loc[start:end]
-    returns = closes.pct_change().fillna(0)
+    warmup = max(lb["mom_long_days"], lb["vol_days"], strat["regime"]["trend_ma_days"]) + 1
+    dates = closes.index[warmup:]
+    if start:
+        dates = dates[dates >= pd.Timestamp(start)]
+    if end:
+        dates = dates[dates <= pd.Timestamp(end)]
+    if len(dates) < 30:
+        raise ValueError(f"Not enough history to backtest: {len(dates)} days after warm-up")
 
-    sig_df, _ = compute_signals(closes, strat)
+    week = pd.Series(dates, index=dates).dt.to_period("W")
+    rebalance_days = set(week[week != week.shift(-1)].index)  # last trading day of each week
 
-    # weekly rebalance on Mondays
-    rebalance_dates = closes.resample("W-MON").last().index
-    rebalance_dates = [d for d in rebalance_dates if d in closes.index]
+    equity, holdings = 1.0, {}  # holdings: ticker -> current weight (drifts with returns)
+    curve, turnover = [], []
+    daily_cash = CASH_YIELD / 252
+    for d in dates:
+        # 1) apply today's returns to yesterday's holdings
+        r = rets.loc[d]
+        invested = sum(holdings.values())
+        day_ret = sum(w * (0.0 if np.isnan(r.get(t, np.nan)) else r[t]) for t, w in holdings.items())
+        day_ret += (1 - invested) * daily_cash
+        equity *= 1 + day_ret
+        if holdings:
+            holdings = {t: w * (1 + (0.0 if np.isnan(r.get(t, np.nan)) else r[t])) / (1 + day_ret) for t, w in holdings.items()}
+        # 2) at the close of a rebalance day, pick new weights using data up to today only
+        if d in rebalance_days:
+            target = select_weights(scores.loc[d], vol.loc[d], set(holdings), strat, risk, float(mult.loc[d]), smap)
+            tv = sum(abs(target.get(t, 0) - holdings.get(t, 0)) for t in set(target) | set(holdings))
+            equity *= 1 - tv * SLIPPAGE_BPS / 10_000
+            turnover.append(tv)
+            holdings = target
+        curve.append((d, equity))
 
-    cash = 1.0
-    weights: dict[str, float] = {}
-    equity_curve = []
-    holdings = set()
-    daily_equity = pd.Series(dtype=float)
-    prev_weights = {}
-
-    for i, rd in enumerate(rebalance_dates):
-        # compute target weights from signals
-        scores = sig_df["s1"].copy()
-        selected = scores.nlargest(top_n)
-        selected = selected[selected > min_score]
-        # hold buffer: keep existing positions in top_n+hold_buffer
-        ranked = scores.nlargest(top_n + hold_buffer)
-        for h in holdings:
-            if h in ranked.index and h not in selected.index:
-                selected[h] = scores.get(h, 0)
-
-        if len(selected) < 2:
-            target = {"SGOV": base_exposure}
-        else:
-            inv_vol = 1.0 / sig_df.loc[selected.index, "vol"].clip(lower=0.01)
-            w = inv_vol / inv_vol.sum()
-            gross = base_exposure * 1.0  # simplified regime: 1.0 if conditions pass
-            target = {t: float(v * gross) for t, v in w.items()}
-            # apply caps
-            for t in target:
-                sleeve = smap.get(t, "")
-                cap = risk["limits"]["max_etf_position"] if t in ("SMH","XLU","XLE","XLB","URA","SGOV") else risk["limits"]["max_single_position"]
-                target[t] = min(target[t], cap)
-
-        # turnover
-        total_turnover = sum(abs(target.get(t, 0) - weights.get(t, 0)) for t in set(list(target) + list(weights)))
-
-        # simulate forward returns from this rebalance to next
-        start_idx = closes.index.get_loc(rd)
-        end_idx = rebalance_dates[i + 1] if i + 1 < len(rebalance_dates) else closes.index[-1]
-        end_idx = closes.index.get_loc(end_idx) if isinstance(end_idx, pd.Timestamp) else start_idx
-
-        port_ret = 0.0
-        for j in range(start_idx, min(end_idx, len(closes) - 1) + 1):
-            day = closes.index[j]
-            day_ret = 0.0
-            for t, w in target.items():
-                if t in returns.columns:
-                    day_ret += w * returns.iloc[j][t]
-            cash_yield = target.get("SGOV", 0) * 0.05 / 252
-            port_ret += day_ret + cash_yield
-            equity_curve.append({"date": day.strftime("%Y-%m-%d"), "equity": float(port_ret)})
-
-        weights = target
-        holdings = set(target.keys())
-        prev_weights = target
-
-    final_equity = equity_curve[-1]["equity"] if equity_curve else 1.0
-
-    # metrics
-    eq_series = pd.Series([e["equity"] for e in equity_curve])
-    daily_rets = eq_series.pct_change().dropna()
-    cagr = (final_equity ** (252 / max(len(daily_rets), 1))) - 1 if len(daily_rets) > 0 else 0
-    vol = daily_rets.std() * np.sqrt(252) if len(daily_rets) > 0 else 0
-    sharpe = cagr / vol if vol > 0 else 0
-    cummax = eq_series.cummax()
-    dd = (eq_series - cummax) / cummax
-    max_dd = float(dd.min()) if len(dd) > 0 else 0
-    turnover = total_turnover if 'total_turnover' in dir() else 0
+    eq = pd.Series([e for _, e in curve], index=[d for d, _ in curve])
+    split = eq.index[int(len(eq) * (1 - TEST_FRACTION))]
+    full = _metrics(eq, turnover)
+    full["final_equity"] = round(float(eq.iloc[-1]), 4)
 
     config_hash = hashlib.sha256(json.dumps(strat, sort_keys=True).encode()).hexdigest()[:12]
-
+    step = max(1, len(curve) // 500)
     return {
         "id": f"bt_{uuid.uuid4().hex[:8]}",
         "kind": "baseline",
         "config_hash": config_hash,
-        "metrics": {
-            "cagr": round(float(cagr), 4),
-            "volatility": round(float(vol), 4),
-            "sharpe": round(float(sharpe), 4),
-            "max_drawdown": round(float(max_dd), 4),
-            "turnover": round(float(turnover), 4),
-            "final_equity": round(float(final_equity), 6),
-        },
-        "equity_curve": equity_curve[::max(1, len(equity_curve)//500)],  # downsample
-        "as_of_start": start,
-        "as_of_end": end,
+        "metrics": full,
+        "metrics_train": _metrics(eq[eq.index < split], []),
+        "metrics_test": _metrics(eq[eq.index >= split], []),
+        "test_start": str(split.date()),
+        "equity_curve": [{"date": d.strftime("%Y-%m-%d"), "equity": round(float(e), 5)} for d, e in curve[::step]],
+        "as_of_start": str(dates[0].date()),
+        "as_of_end": str(dates[-1].date()),
         "config": strat,
     }

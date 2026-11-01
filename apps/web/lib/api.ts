@@ -6,10 +6,10 @@ async function fetchAPI(path: string) {
   return res.json();
 }
 
-async function postAPI(path: string, body: any) {
+async function postAPI(path: string, body: any, headers: Record<string, string> = {}) {
   const res = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);

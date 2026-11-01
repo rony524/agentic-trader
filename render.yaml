@@ -1,3 +1,4 @@
+# Backend only. The web app (apps/web) deploys to Vercel with NEXT_PUBLIC_API_URL set to this service's URL.
 services:
   trader-api:
     type: web
@@ -9,8 +10,18 @@ services:
     envVars:
       - key: DATABASE_URL
         sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
       - key: ALPACA_PAPER
         value: "true"
+      - key: ALPACA_API_KEY_ID
+        sync: false
+      - key: ALPACA_API_SECRET_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: APPROVER_ADDRESSES
+        sync: false
       - key: WEB_ORIGIN
         sync: false
       - key: ADMIN_TOKEN
@@ -20,13 +31,3 @@ services:
       - key: TRADING_FROZEN
         value: "false"
     healthCheckPath: /healthz
-
-  trader-web:
-    type: web
-    name: agentic-trader-web
-    runtime: static
-    staticPublishPath: apps/web/.next
-    buildCommand: cd apps/web && npm install && npm run build
-    envVars:
-      - key: NEXT_PUBLIC_API_URL
-        sync: false

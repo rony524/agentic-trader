@@ -33,7 +33,9 @@ function TopBar() {
       <div className="flex items-center gap-6">
         <a href="/" className="font-bold text-lg">⚡ Agentic Trader</a>
         <a href="/proposals" className="text-gray-300 hover:text-white text-sm">Proposals</a>
+        <a href="/backtests" className="text-gray-300 hover:text-white text-sm">Backtests</a>
         <a href="/audit" className="text-gray-300 hover:text-white text-sm">Audit Log</a>
+        <a href="/approvers" className="text-gray-300 hover:text-white text-sm">Approvers</a>
       </div>
       <div className="flex items-center gap-3">
         <span className="bg-green-600 text-white text-xs px-2 py-1 rounded font-medium">PAPER MODE</span>

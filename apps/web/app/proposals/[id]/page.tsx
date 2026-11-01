@@ -2,6 +2,9 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { fetchAPI, postAPI } from "@/lib/api";
+import { tickerToSleeve, Universe } from "@/lib/viz";
+import { EquityCompareChart, DrawdownChart, MetricCompare, AllocationBar } from "@/components/charts";
+import SignMethodPicker, { useSignMethod, signWith } from "@/components/SignMethodPicker";
 
 export default function ProposalDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -10,9 +13,12 @@ export default function ProposalDetailPage() {
   const [timer, setTimer] = useState(60);
   const [signing, setSigning] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
+  const [universe, setUniverse] = useState<Universe | null>(null);
+  const signMethod = useSignMethod();
 
   const load = () => fetchAPI(`/proposals/${id}`).then(setP).catch(() => {});
   useEffect(() => { load(); }, [id]);
+  useEffect(() => { fetchAPI("/universe").then(setUniverse).catch(() => {}); }, []);
 
   useEffect(() => {
     if (timer > 0) { const t = setTimeout(() => setTimer(timer - 1), 1000); return () => clearTimeout(t); }
@@ -27,22 +33,16 @@ export default function ProposalDetailPage() {
     if (decision === "REJECT" && !rejectComment) { alert("Rejection requires a comment"); return; }
     setSigning(true);
     try {
-      const { typed_data, nonce } = await fetchAPI(`/proposals/${id}/typed-data?decision=${decision}`);
-      const eth = (window as any).ethereum;
-      if (!eth) { alert("MetaMask not found"); return; }
-      const accounts = await eth.request({ method: "eth_requestAccounts" });
-      const from = accounts[0];
-      const signature = await eth.request({
-        method: "eth_signTypedData_v4",
-        params: [from, JSON.stringify(typed_data)],
-      });
+      const { typed_data, nonce, passkey } = await fetchAPI(`/proposals/${id}/typed-data?decision=${decision}`);
+      const signature = await signWith(signMethod.method, typed_data, passkey);
       const result = await postAPI(`/proposals/${id}/signatures`, { decision, signature, nonce, comment: rejectComment });
-      alert(`${decision} — ${result.message}`);
+      alert(`${decision === "APPROVE" ? "Approved" : "Rejected"} — ${result.message}`);
       load();
     } catch (e: any) {
-      alert(`Signing failed: ${e.message}`);
+      alert(`Couldn't record your decision: ${e.message}`);
+    } finally {
+      setSigning(false);
     }
-    setSigning(false);
   }
 
   return (
@@ -55,6 +55,15 @@ export default function ProposalDetailPage() {
         </div>
         <span className={`px-3 py-1.5 rounded text-sm font-medium ${p.status === "PENDING_REVIEW" ? "bg-yellow-600" : p.status === "APPROVED" ? "bg-green-600" : p.status === "REJECTED" ? "bg-red-600" : "bg-gray-600"} text-white`}>{p.status}</span>
       </div>
+
+      {p.kind === "hypothesis" && (
+        <div className={`rounded-xl p-4 border text-sm ${p.risk_notes?.gate_passed ? "border-green-800 bg-green-950/40" : "border-yellow-800 bg-yellow-950/40"}`}>
+          <p className="font-medium">
+            {p.risk_notes?.gate_passed ? "✓ Beat the baseline on the out-of-sample test window" : "⚠ Did not beat the baseline on the out-of-sample test window"}
+          </p>
+          {p.risk_notes?.origin && <p className="text-gray-400 mt-1">💡 Human idea: {p.risk_notes.origin}</p>}
+        </div>
+      )}
 
       {/* Rationale */}
       <Section title="Why">
@@ -80,34 +89,31 @@ export default function ProposalDetailPage() {
 
       {/* Target weights */}
       {p.target_weights && (
-        <Section title="Target Weights">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            {Object.entries(p.target_weights).map(([sym, w]) => (
-              <div key={sym} className="bg-gray-800 rounded p-2 text-center">
-                <p className="font-medium">{sym}</p>
-                <p className="text-sm text-gray-400">{(Number(w) * 100).toFixed(1)}%</p>
-              </div>
-            ))}
-          </div>
+        <Section title="Target Allocation">
+          <AllocationBar weights={p.target_weights} sleeveOf={tickerToSleeve(universe)} />
         </Section>
       )}
 
       {/* Backtest comparison */}
       {p.baseline_metrics && (
-        <Section title="Backtest: Baseline vs Candidate">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-gray-800 rounded p-4">
-              <p className="text-sm font-medium text-gray-400 mb-2">Baseline</p>
-              <MetricsTable metrics={p.baseline_metrics} />
+        <Section title={p.candidate_metrics ? "Backtest: Baseline vs Candidate" : "Backtest"}>
+          <div className="space-y-6">
+            <div>
+              <p className="text-sm text-gray-400 mb-2">Cumulative return</p>
+              <EquityCompareChart baseline={p.baseline_curve} candidate={p.candidate_curve} />
             </div>
-            {p.candidate_metrics && (
-              <div className="bg-gray-800 rounded p-4">
-                <p className="text-sm font-medium text-gray-400 mb-2">Candidate</p>
-                <MetricsTable metrics={p.candidate_metrics} />
+            {p.baseline_curve?.length > 0 && (
+              <div>
+                <p className="text-sm text-gray-400 mb-2">Drawdown from peak</p>
+                <DrawdownChart baseline={p.baseline_curve} candidate={p.candidate_curve} />
               </div>
             )}
+            <MetricCompare baseline={p.baseline_metrics} candidate={p.candidate_metrics} />
           </div>
-          <p className="text-sm text-gray-500 mt-2">Variants tested: {p.variants_tested}</p>
+          <p className="text-xs text-gray-500 mt-3">
+            Variants tested: {p.variants_tested} · Baseline <span className="font-mono">{p.backtest_baseline_id}</span>
+            {p.backtest_candidate_id && <> · Candidate <span className="font-mono">{p.backtest_candidate_id}</span></>}
+          </p>
         </Section>
       )}
 
@@ -147,12 +153,13 @@ export default function ProposalDetailPage() {
             <Checklist label="I understand the main risk" checked={checked.risk} onChange={() => setChecked({ ...checked, risk: !checked.risk })} />
             <Checklist label="Changes are within the limits I'm comfortable with" checked={checked.limits} onChange={() => setChecked({ ...checked, limits: !checked.limits })} />
             <p className="text-sm text-gray-500">Review timer: {timer > 0 ? `${timer}s remaining` : "✓ Ready"}</p>
-            <div className="flex gap-3">
+            <SignMethodPicker {...signMethod} />
+            <div className="flex flex-wrap gap-3">
               <button disabled={!canApprove} onClick={() => signDecision("APPROVE")}
                 className={`px-4 py-2 rounded font-medium ${canApprove ? "bg-green-600 hover:bg-green-700" : "bg-gray-700 cursor-not-allowed"} text-white`}>
-                {signing ? "Signing…" : "Sign Approval"}
+                {signing ? "Confirming…" : "Approve"}
               </button>
-              <input value={rejectComment} onChange={e => setRejectComment(e.target.value)} placeholder="Rejection reason…" className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm flex-1" />
+              <input value={rejectComment} onChange={e => setRejectComment(e.target.value)} placeholder="Rejection reason…" className="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm flex-1 min-w-[12rem]" />
               <button onClick={() => signDecision("REJECT")}
                 className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded font-medium">Reject</button>
             </div>
@@ -165,19 +172,6 @@ export default function ProposalDetailPage() {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return <div className="bg-gray-900 rounded-lg p-6 border border-gray-800"><h2 className="text-lg font-semibold mb-4">{title}</h2>{children}</div>;
-}
-
-function MetricsTable({ metrics }: { metrics: any }) {
-  return (
-    <table className="w-full text-sm">
-      {Object.entries(metrics).map(([k, v]) => (
-        <tr key={k} className="border-b border-gray-700/50">
-          <td className="py-1 text-gray-400">{k}</td>
-          <td className="py-1 text-right font-medium">{typeof v === "number" ? v.toFixed(4) : String(v)}</td>
-        </tr>
-      ))}
-    </table>
-  );
 }
 
 function Checklist({ label, checked, onChange }: { label: string; checked: boolean; onChange: () => void }) {

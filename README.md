@@ -56,32 +56,34 @@ docker-compose.yml        # Local dev
 ## Quick start (local)
 
 ### Prerequisites
-- Python 3.12+ (3.15 tested)
+- Python 3.12–3.14 (`eth-account`, needed to verify approval signatures, doesn't build on 3.15 yet)
 - Node.js 18+
+- MetaMask on the **Sepolia** network (the signing domain uses Sepolia's chain ID; the app asks MetaMask to switch)
 
 ### Backend
 ```bash
 cd services/trader
-pip install -e . --no-deps
-pip install fastapi uvicorn sqlalchemy pydantic pydantic-settings pandas numpy requests python-dotenv yfinance feedparser networkx httpx ruamel.yaml anthropic
+pip install -e ".[alpaca,eth,dev]"
 
 # Set env vars
-set ADMIN_TOKEN=dev-admin-token
-set ALPACA_PAPER=true
-set WEB_ORIGIN=http://localhost:3000
+export ADMIN_TOKEN=dev-admin-token
+export ALPACA_PAPER=true
+export WEB_ORIGIN=http://localhost:3000
+export APPROVER_ADDRESSES=0xYourMetaMaskAddress   # nobody can approve until this (or config/approvers.yaml) lists you
+export ANTHROPIC_API_KEY=...                      # optional: without it the agent uses deterministic fallbacks
 
-# Run the pipeline once to seed data
+# Start the API
 python -m uvicorn trader.api.main:app --host 0.0.0.0 --port 8000 --app-dir src
 
 # In another terminal, seed data:
-curl -X POST http://localhost:8000/admin/run-pipeline -H "Content-Type: application/json" -d "{\"token\":\"dev-admin-token\"}"
+curl -X POST http://localhost:8000/admin/run-pipeline -H "X-Admin-Token: dev-admin-token"
 ```
 
 ### Frontend
 ```bash
 cd apps/web
 npm install
-set NEXT_PUBLIC_API_URL=http://localhost:8000
+export NEXT_PUBLIC_API_URL=http://localhost:8000
 npx next dev --port 3000
 ```
 
@@ -90,7 +92,7 @@ Open http://localhost:3000
 ### Run safety tests
 ```bash
 cd services/trader
-python -m pytest tests/test_safety.py -v
+python -m pytest -v
 ```
 
 ## API endpoints
@@ -106,26 +108,31 @@ python -m pytest tests/test_safety.py -v
 | GET | `/proposals/{id}` | Proposal detail with backtests, risk notes |
 | GET | `/proposals/{id}/typed-data` | EIP-712 payload to sign |
 | POST | `/proposals/{id}/signatures` | Submit signed approval/rejection |
+| POST | `/ideas/typed-data` | EIP-712 payload for submitting an idea |
+| POST | `/ideas` | Approver submits a signed idea; the agent backtests it and drafts a `hypothesis` proposal |
+| GET | `/ideas` | List submitted ideas and their status |
+| GET | `/universe` | Sleeves and their tickers |
 | GET | `/backtests/{id}` | Backtest result |
 | GET | `/portfolio` | Paper account snapshot |
 | GET | `/audit` | Audit log entries |
 | GET | `/audit/verify` | Verify hash chain (server-side) |
-| POST | `/admin/run-pipeline` | Run the full daily pipeline |
-| POST | `/admin/execute` | Execute an approved proposal |
+| POST | `/admin/run-pipeline` | Run the full daily pipeline (needs `X-Admin-Token`) |
+| POST | `/admin/execute` | Execute approved proposals (needs `X-Admin-Token`) |
+| POST | `/controls`, `/admin/approvers` | Kill switches, approver registry (need `X-Admin-Token`) |
 
-## Safety tests (6/6 passing)
-1. **Startup fails if not paper** — `ALPACA_PAPER=false` → `PaperOnlyViolation`
-2. **Paper-only guard** — correct config passes assertion
-3. **No live endpoint in code** — `api.alpaca.markets` only appears as a forbidden reference
-4. **No order without approval** — `PENDING_REVIEW` proposal → 0 orders
-5. **Rejected proposal → no orders** — `REJECTED` proposal → 0 orders
-6. **Audit chain detects tampering** — modifying any entry → verification fails
+## Safety tests
+- **Paper only:** startup fails if `ALPACA_PAPER=false`; no live endpoint anywhere in the code.
+- **No order without a verified approval:** pending, rejected, or "APPROVED" proposals without valid signatures place nothing — the executor re-verifies every signature itself. Frozen trading places nothing.
+- **Forgery:** garbage signatures are rejected; admin endpoints refuse requests without the token.
+- **Audit chain:** tampering is detected, and the browser check on `/audit` verifies the same way.
+- **Backtest:** no look-ahead (results up to a date don't change when later data is added); parameters change results.
+- **Agent:** candidate configs outside the `05_STRATEGY_SPEC` bounds are rejected; citations can only point at ingested articles.
 
 ## Deployment
 - **API**: Render web service (Dockerfile in `services/trader/`)
 - **Web**: Vercel (root dir = `apps/web`)
 - **DB**: Neon Postgres (or SQLite for local dev)
-- Set env vars per `.env.example`
+- Set env vars per `.env.example` (Render: `DATABASE_URL`, Alpaca paper keys, `ANTHROPIC_API_KEY`, `APPROVER_ADDRESSES`, `WEB_ORIGIN` = your Vercel URL)
 
 ## Disclaimer
 Educational paper-trading project. Nothing it produces is financial advice.

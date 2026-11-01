@@ -17,8 +17,12 @@ def _find_config_dir() -> pathlib.Path:
 _CONFIG_DIR = _find_config_dir()
 _yaml = YAML(typ="safe")
 
+_REPO_ROOT = _CONFIG_DIR.parent
+
 class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./trader.db"
+    # Neon's direct (non -pooler) URL; used for DDL, since PgBouncer transaction mode is for app traffic
+    DATABASE_URL_UNPOOLED: str = ""
     SESSION_SECRET: str = "dev-secret-change-me"
     WEB_ORIGIN: str = "http://localhost:3000"
     ALPACA_API_KEY_ID: str = ""
@@ -31,7 +35,9 @@ class Settings(BaseSettings):
     NEXT_PUBLIC_API_URL: str = "http://localhost:8000"
 
     class Config:
-        env_file = ".env"
+        # `neon env pull` writes the repo-root .env.local; later files win, real env vars beat all of them
+        env_file = (_REPO_ROOT / ".env", _REPO_ROOT / ".env.local", ".env")
+        extra = "ignore"
 
 settings = Settings()
 
@@ -56,4 +62,11 @@ def get_shockmap() -> dict:
     return load_yaml("shockmap.yaml")
 
 def get_approvers() -> dict:
-    return load_yaml("approvers.yaml")
+    """approvers.yaml plus any comma-separated APPROVER_ADDRESSES (survives redeploys, unlike YAML edits)."""
+    cfg = load_yaml("approvers.yaml")
+    cfg["approvers"] = list(cfg.get("approvers") or [])
+    known = {a["address"].lower() for a in cfg["approvers"]}
+    for addr in filter(None, (a.strip() for a in os.environ.get("APPROVER_ADDRESSES", "").split(","))):
+        if addr.lower() not in known:
+            cfg["approvers"].append({"name": "env", "address": addr, "roles": ["operator"]})
+    return cfg

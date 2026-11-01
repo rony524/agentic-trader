@@ -15,6 +15,14 @@ lookbacks:
   vol_days: 60
 shock_half_life_days: 10
 base_exposure: 1.0
+# per-sleeve weight multipliers (1.0 = neutral); freed weight goes to cash, and gross never exceeds base_exposure
+sleeve_tilts:
+  "Memory & compute": 1.0
+  "Semi equipment": 1.0
+  "Hyperscalers": 1.0
+  "Power & grid": 1.0
+  "Energy inputs": 1.0
+  "Materials / logistics": 1.0
 regime:
   trend_ma_days: 200
   vol_threshold: 1.5

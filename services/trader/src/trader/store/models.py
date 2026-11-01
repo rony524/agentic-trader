@@ -5,8 +5,22 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, 
 from sqlalchemy.orm import declarative_base, sessionmaker
 from trader.settings import settings
 
+def _db_url(url: str) -> str:
+    # Neon hands out postgres:// or postgresql:// URLs; route them to the psycopg 3 driver we install
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+def as_utc(value: dt.datetime | None) -> dt.datetime | None:
+    """DB drivers return naive datetimes for these columns; everything we store is UTC."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=dt.UTC)
+
 Base = declarative_base()
-engine = create_engine(settings.DATABASE_URL, echo=False, future=True)
+# pre_ping: Neon computes scale to zero, which drops idle pooled connections
+engine = create_engine(_db_url(settings.DATABASE_URL), echo=False, future=True, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 class AuditLog(Base):
@@ -53,6 +67,38 @@ class Proposal(Base):
     proposal_hash = Column(String, default="")
     created_at = Column(DateTime, default=lambda: dt.datetime.now(dt.UTC))
     expires_at = Column(DateTime, default=lambda: dt.datetime.now(dt.UTC) + dt.timedelta(hours=24))
+
+class Idea(Base):
+    """A hypothesis submitted by an approver; the agent backtests it and drafts a `hypothesis` proposal."""
+    __tablename__ = "ideas"
+    id = Column(String, primary_key=True)
+    text = Column(Text, nullable=False)
+    evidence_url = Column(String, default="")
+    submitted_by = Column(String, nullable=False)
+    signature = Column(Text, nullable=False, unique=True)
+    status = Column(String, default="QUEUED")  # QUEUED|PROCESSING|PROPOSED|NO_PROPOSAL|FAILED
+    proposal_id = Column(String, default=None)
+    note = Column(Text, default="")
+    created_at = Column(DateTime, default=lambda: dt.datetime.now(dt.UTC))
+    updated_at = Column(DateTime, default=lambda: dt.datetime.now(dt.UTC))
+
+class Passkey(Base):
+    """A registered approver passkey (WebAuthn). Deleting the row revokes it."""
+    __tablename__ = "passkeys"
+    credential_id = Column(String, primary_key=True)  # base64url
+    name = Column(String, nullable=False)
+    public_key = Column(Text, nullable=False)  # COSE key, base64url
+    sign_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=lambda: dt.datetime.now(dt.UTC))
+
+class PasskeyInvite(Base):
+    """One-time enrollment link an admin creates for a named approver."""
+    __tablename__ = "passkey_invites"
+    code_hash = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    challenge = Column(String, default="")
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, default=None)
 
 class Signature(Base):
     __tablename__ = "signatures"
@@ -149,7 +195,15 @@ class Control(Base):
     value = Column(String, default="")
 
 def init_db():
-    Base.metadata.create_all(engine)
+    # Run DDL over Neon's direct connection when the app itself is on Postgres (never when tests point at SQLite)
+    if settings.DATABASE_URL_UNPOOLED and _db_url(settings.DATABASE_URL).startswith("postgresql"):
+        ddl_engine = create_engine(_db_url(settings.DATABASE_URL_UNPOOLED), future=True)
+        try:
+            Base.metadata.create_all(ddl_engine)
+        finally:
+            ddl_engine.dispose()
+    else:
+        Base.metadata.create_all(engine)
 
 def get_db():
     db = SessionLocal()

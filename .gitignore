@@ -13,3 +13,6 @@ trader.db
 services/trader/trader.db
 services/trader/.pytest_cache/
 apps/web/next-env.d.ts
+*.tsbuildinfo
+.neon
+.env.local
