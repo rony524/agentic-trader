@@ -6,6 +6,15 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from trader.settings import settings
 
 def _db_url(url: str) -> str:
+    # Forgive common dashboard paste mistakes: spaces, quotes, a KEY= prefix, or Neon's `psql '...'` snippet
+    url = url.strip()
+    for junk in ("DATABASE_URL_UNPOOLED=", "DATABASE_URL=", "psql "):
+        if url.startswith(junk):
+            url = url[len(junk):].strip()
+    url = url.strip("'\"")
+    if "://" not in url:
+        # never echo the value: it holds the password
+        raise ValueError("DATABASE_URL is empty or not a URL; it must look like postgresql://user:pass@host/db?sslmode=require")
     # Neon hands out postgres:// or postgresql:// URLs; route them to the psycopg 3 driver we install
     for prefix in ("postgres://", "postgresql://"):
         if url.startswith(prefix):
