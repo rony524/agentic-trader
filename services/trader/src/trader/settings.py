@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     ALPACA_API_SECRET_KEY: str = ""
     ALPACA_PAPER: bool = True
     EXPECTED_PAPER_ACCOUNT: str = ""
-    ANTHROPIC_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
     AGENT_ENABLED: bool = True
     TRADING_FROZEN: bool = False
     NEXT_PUBLIC_API_URL: str = "http://localhost:8000"

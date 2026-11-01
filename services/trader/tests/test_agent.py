@@ -20,7 +20,7 @@ def test_apply_changes_rejects_out_of_bounds():
     assert apply_changes(strat, {}) is None
 
 def test_no_key_means_fallback(monkeypatch):
-    monkeypatch.setattr(llm.settings, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(llm.settings, "GEMINI_API_KEY", "")
     assert llm.classify_events(ITEMS, ["dram_price"]) is None
     assert llm.write_digest(ITEMS) is None
 

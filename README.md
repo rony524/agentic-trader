@@ -70,7 +70,7 @@ export ADMIN_TOKEN=dev-admin-token
 export ALPACA_PAPER=true
 export WEB_ORIGIN=http://localhost:3000
 export APPROVER_ADDRESSES=0xYourMetaMaskAddress   # nobody can approve until this (or config/approvers.yaml) lists you
-export ANTHROPIC_API_KEY=...                      # optional: without it the agent uses deterministic fallbacks
+export GEMINI_API_KEY=...                         # optional: without it the agent uses deterministic fallbacks
 
 # Start the API
 python -m uvicorn trader.api.main:app --host 0.0.0.0 --port 8000 --app-dir src
@@ -132,7 +132,7 @@ python -m pytest -v
 - **API**: Render web service (Dockerfile in `services/trader/`)
 - **Web**: Vercel (root dir = `apps/web`)
 - **DB**: Neon Postgres (or SQLite for local dev)
-- Set env vars per `.env.example` (Render: `DATABASE_URL`, Alpaca paper keys, `ANTHROPIC_API_KEY`, `APPROVER_ADDRESSES`, `WEB_ORIGIN` = your Vercel URL)
+- Set env vars per `.env.example` (Render: `DATABASE_URL`, Alpaca paper keys, `GEMINI_API_KEY`, `APPROVER_ADDRESSES`, `WEB_ORIGIN` = your Vercel URL)
 
 ## Disclaimer
 Educational paper-trading project. Nothing it produces is financial advice.

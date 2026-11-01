@@ -17,7 +17,7 @@ services:
         sync: false
       - key: ALPACA_API_SECRET_KEY
         sync: false
-      - key: ANTHROPIC_API_KEY
+      - key: GEMINI_API_KEY
         sync: false
       - key: APPROVER_ADDRESSES
         sync: false

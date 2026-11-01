@@ -4,22 +4,23 @@ Three functions: classify_events(), write_digest(), draft_proposal_text() (+ pro
 Each returns None when the agent is disabled, there is no API key, or the call fails; callers then use a
 deterministic fallback, so the pipeline never depends on the LLM being up.
 
-News text is untrusted: it is wrapped in <untrusted_document> tags, and Claude refers to articles only by
+News text is untrusted: it is wrapped in <untrusted_document> tags, and the model refers to articles only by
 their index in the batch, so every URL we show comes from our own ingest, never from model output.
 """
 from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from trader.settings import settings
 from trader.audit.chain import append_audit
 
+# Gemini free-tier models (Pro has no free tier); effort maps to each call's thinking_level
 MODELS = {
-    "classify": "claude-haiku-5-5",
-    "digest": "claude-sonnet-5-5",
-    "proposal": "claude-opus-5-5",
+    "classify": "gemini-3.5-flash-lite",
+    "digest": "gemini-3.8-flash",
+    "proposal": "gemini-3.8-flash",
 }
 Theme = Literal["memory", "ai_capex", "power", "fab_supply", "policy", "logistics"]
 
@@ -79,39 +80,43 @@ class ProposalText(BaseModel):
 # ---------- plumbing ----------
 
 def _client():
-    if not settings.AGENT_ENABLED or not settings.ANTHROPIC_API_KEY:
+    if not settings.AGENT_ENABLED or not settings.GEMINI_API_KEY:
         return None
-    import anthropic
-    return anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    from google import genai
+    return genai.Client(api_key=settings.GEMINI_API_KEY)
 
 def _call(task: str, system: str, user: str, schema: type[BaseModel], max_tokens: int = 16000, effort: str = "medium"):
     client = _client()
     if client is None:
         return None
-    import anthropic
     model = MODELS[task]
     try:
-        resp = client.messages.parse(
+        resp = client.interactions.create(
             model=model,
-            max_tokens=max_tokens,
-            # stable prefix first so it can be cached; volatile content (news, dates) goes in the user turn
-            system=[{"type": "text", "text": HARD_RULES + "\n\n" + system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user}],
-            output_config={"effort": effort},
-            output_format=schema,
+            # rules + task instructions stay out of the user turn, which carries the untrusted news
+            system_instruction=HARD_RULES + "\n\n" + system,
+            input=user,
+            response_format={"type": "text", "mime_type": "application/json", "schema": schema.model_json_schema()},
+            generation_config={"thinking_level": effort, "max_output_tokens": max_tokens},
         )
-    except anthropic.APIError as e:
+    except Exception as e:  # network, quota/rate limit, or a schema the API rejects: all fall back
         append_audit("agent", "LLM_ERROR", {"task": task, "model": model, "error": str(e)[:300]})
         return None
     u = resp.usage
     append_audit("agent", "LLM_CALL", {
-        "task": task, "model": model, "stop_reason": resp.stop_reason,
-        "input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
-        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+        "task": task, "model": model, "status": resp.status,
+        "input_tokens": getattr(u, "total_input_tokens", 0) or 0,
+        "output_tokens": getattr(u, "total_output_tokens", 0) or 0,
+        "thought_tokens": getattr(u, "total_thought_tokens", 0) or 0,
     })
-    if resp.stop_reason != "end_turn" or resp.parsed_output is None:
+    if resp.status != "completed" or not resp.output_text:
         return None
-    return resp.parsed_output
+    try:
+        # Gemini only constrains decoding to the schema; pydantic still enforces Literals and types
+        return schema.model_validate_json(resp.output_text)
+    except ValidationError as e:
+        append_audit("agent", "LLM_ERROR", {"task": task, "model": model, "error": "invalid output: " + str(e)[:280]})
+        return None
 
 def _articles_block(items: list[dict]) -> str:
     return "\n".join(
