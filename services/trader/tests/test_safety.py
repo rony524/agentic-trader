@@ -19,6 +19,19 @@ def test_paper_only_guard():
     settings.ALPACA_PAPER = True
     assert_paper_only()  # should not raise
 
+def test_trading_client_base_url_check(monkeypatch):
+    """Test: a real paper client passes the base-URL check, a live one is refused (alpaca-py uses a BaseURL enum)."""
+    pytest.importorskip("alpaca")
+    from alpaca.trading.client import TradingClient
+    from trader.execution import executor
+    monkeypatch.setattr(settings, "ALPACA_API_KEY_ID", "PK" + "X" * 24)
+    monkeypatch.setattr(settings, "ALPACA_API_SECRET_KEY", "x" * 44)
+    executor.get_trading_client()  # paper=True: must not raise
+    live = lambda key, secret, paper: TradingClient(key, secret, paper=False)
+    monkeypatch.setattr("alpaca.trading.client.TradingClient", live)
+    with pytest.raises(PaperOnlyViolation):
+        executor.get_trading_client()
+
 def test_no_live_endpoint_in_code():
     """Test: live Alpaca endpoint is not used in execution code."""
     import pathlib

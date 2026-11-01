@@ -34,10 +34,11 @@ def get_trading_client():
         settings.ALPACA_API_SECRET_KEY,
         paper=True  # constant, not from env
     )
-    # verify base URL
+    # verify base URL; alpaca-py stores it as a BaseURL enum whose str() is "BaseURL.TRADING_PAPER", so compare .value
     base = getattr(client, "_base_url", None) or getattr(client, "base_url", None)
-    if base and "paper" not in str(base):
-        raise PaperOnlyViolation(f"TradingClient base URL is not paper: {base}")
+    base_url = str(getattr(base, "value", base) or "").rstrip("/")
+    if base is not None and base_url != PAPER_BASE_URL:
+        raise PaperOnlyViolation(f"TradingClient base URL is not paper: {base_url}")
     return client
 
 def get_data_client():
