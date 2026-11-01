@@ -1,9 +1,8 @@
 # Backend only. The web app (apps/web) deploys to Vercel with NEXT_PUBLIC_API_URL set to this service's URL.
 services:
-  trader-api:
-    type: web
+  - type: web
     name: agentic-trader-api
-    env: docker
+    runtime: docker
     dockerfilePath: ./services/trader/Dockerfile
     dockerContext: .
     plan: free
