@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from trader.settings import settings, get_strategy, get_risk, get_approvers, get_universe
+from trader.settings import settings, env, get_strategy, get_risk, get_approvers, get_universe
 from trader.store.models import (
     init_db, get_db, as_utc, AuditLog, Backtest, Proposal, Signature, Order,
     NewsItem, Signal, Digest, Event, PortfolioSnapshot, ServiceHeartbeat, Control, Idea,
@@ -45,9 +45,11 @@ app.add_middleware(
 init_db()
 
 def require_admin(x_admin_token: str = Header(default="")):
-    """Admin endpoints need the ADMIN_TOKEN env var to be set and sent as X-Admin-Token."""
-    admin_token = os.environ.get("ADMIN_TOKEN", "")
-    if not admin_token or x_admin_token != admin_token:
+    """Admin endpoints need the ADMIN_TOKEN setting to be set and sent as X-Admin-Token."""
+    admin_token = env("ADMIN_TOKEN")
+    if not admin_token:
+        raise HTTPException(503, "ADMIN_TOKEN is not set on the API server")
+    if x_admin_token != admin_token:
         raise HTTPException(403, "Invalid admin token")
 
 def _verify_approver(typed: dict, signature: str, db: Session, approvers_cfg: dict) -> str:
